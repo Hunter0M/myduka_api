@@ -50,10 +50,6 @@ class Product(BaseModel):
 # Schema for returning a sale (with additional fields)
 class Sale(BaseModel):
     pid: int  # Product ID
-    user_id: int  # User ID (customer)
+    # user_id: int  # User ID (customer)
     quantity: int  # Quantity of the product sold
     # sale_date: datetime  # Date of the sale
-
-
-
-

@@ -4,8 +4,10 @@ from fastapi import FastAPI, Depends, status, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 import models, database,schemas
-# this for hashing the password
-from passlib.context import CryptContext # pip install passlib[bcrypt] 
+from werkzeug.security import generate_password_hash,check_password_hash
+from auth import create_token,timedelta,get_current_user
+# # this for hashing the password
+# from passlib.context import CryptContext # pip install passlib[bcrypt] 
 
 app = FastAPI()
 models.Base.metadata.create_all(database.engine)
@@ -16,8 +18,8 @@ def index():
     return {"message": "Hello, World!"}
 
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# # Password hashing
+# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Function to validate password complexity
 def validate_password(password: str) -> None:
@@ -36,38 +38,55 @@ def validate_password(password: str) -> None:
 
 # Start route for registering a user >>
 # Route for registering a user:
+
 @app.post("/register", response_model=dict, status_code=status.HTTP_201_CREATED)
 def register_user(user: schemas.User, db: Session = Depends(database.get_db)):
-    # Check if passwords match
-    if user.password != user.confirm_password:
-        raise HTTPException(status_code=400, detail="Passwords do not match")
-
-    # Validate password complexity
-    validate_password(user.password)
-
-    # Check if the user already exists
-    existing_user = db.query(models.Users).filter(models.Users.email == user.email).first()
+    existing_user = db.query(models.Users).filter(models.Users.email==user.email).first()
     if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    # Hash the password
-    hashed_password = pwd_context.hash(user.password)
-
-    # Create a new user instance
+        raise HTTPException(status_code=400, detail="User already exists,please login")
+    hashed_password = generate_password_hash(user.password)
     new_user = models.Users(
-        first_name=user.first_name,
-        last_name=user.last_name,
-        email=user.email,
-        phone=user.phone,
-        password=hashed_password  # Store the hashed password
-        # Note: Do not store confirm_password in the database
-    )
-
+        first_name=user.first_name,last_name=user.last_name,
+        email=user.email,phone=user.password,password=hashed_password)
+   
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    return{"message":"User created successfully"} 
 
-    return {"message": "User  registered successfully", "user_id": new_user.id}
+
+# @app.post("/register", response_model=dict, status_code=status.HTTP_201_CREATED)
+# def register_user(user: schemas.User, db: Session = Depends(database.get_db)):
+#     # Check if passwords match
+#     if user.password != user.confirm_password:
+#         raise HTTPException(status_code=400, detail="Passwords do not match")
+
+#     # Validate password complexity
+#     validate_password(user.password)
+
+#     # Check if the user already exists
+#     existing_user = db.query(models.Users).filter(models.Users.email == user.email).first()
+#     if existing_user:
+#         raise HTTPException(status_code=400, detail="Email already registered")
+
+#     # Hash the password
+#     # hashed_password = pwd_context.hash(user.password)
+
+#     # Create a new user instance
+#     new_user = models.Users(
+#         first_name=user.first_name,
+#         last_name=user.last_name,
+#         email=user.email,
+#         phone=user.phone,
+#         password=user.password  # Store the hashed password
+#         # Note: Do not store confirm_password in the database
+#     )
+
+#     db.add(new_user)
+#     db.commit()
+#     db.refresh(new_user)
+
+#     return {"message": "User  registered successfully", "user_id": new_user.id}
 # The end for registering a user <<
 
 
@@ -93,22 +112,33 @@ def fetch_user(user_id: int, db: Session = Depends(database.get_db)):
 def login(user: schemas.UserLogin, db: Session = Depends(database.get_db)):
     # Fetch the user by email
     existing_user = db.query(models.Users).filter(models.Users.email == user.email).first()
-    
-    # Check if user exists
     if not existing_user:
-        raise HTTPException(status_code=400, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="User does nor exist,please register")
+     
+    try:
+        if check_password_hash(existing_user.password,user.password):
+            print("hello")
+            token = create_token(data={"user":user.email}, expires_delta=timedelta(minutes=30))
+            print(token)
+            return {"token":token, "token_type":"bearer"}
+    except Exception as e:
+        raise HTTPException(status_code=500,detail=f"Error creating token: {e}")
     
-    # Verify the password
-    if not pwd_context.verify(user.password, existing_user.password):
-        raise HTTPException(status_code=400, detail="Invalid email or password")
+    # # Check if user exists
+    # if not existing_user:
+    #     raise HTTPException(status_code=400, detail="Invalid email or password")
     
-    return {"message": "Login successful", "user_id": existing_user.id}
+    # # # Verify the password
+    # # if not pwd_context.verify(user.password, existing_user.password):
+    # #     raise HTTPException(status_code=400, detail="Invalid email or password")
+    
+    # return {"message": "Login successful", "user_id": existing_user.id}
 
 # Start Product Routes >> 
 
 # Route for adding products:
 @app.post("/products", status_code=status.HTTP_201_CREATED)
-def add_product(request:schemas.Product, db:Session=Depends(database.get_db)):
+def add_product(request:schemas.Product, user = Depends(get_current_user), db:Session=Depends(database.get_db)):
     new_product = models.Products(product_name=request.product_name, product_price=request.product_price, selling_price=request.selling_price, stock_quantity=request.stock_quantity)
     db.add(new_product)
     db.commit()
@@ -117,7 +147,7 @@ def add_product(request:schemas.Product, db:Session=Depends(database.get_db)):
 
 # Route for getting products:
 @app.get("/products", status_code=status.HTTP_200_OK)
-def fetch_products(db:Session=Depends(database.get_db)):
+def fetch_products(user = Depends(get_current_user),db:Session=Depends(database.get_db)):
     products= db.query(models.Products).all()
     return products
 
@@ -167,15 +197,15 @@ def add_sale(request: schemas.Sale, db: Session = Depends(database.get_db)):
         raise HTTPException(status_code=404, detail="Product not found")
     
     # Check if the user exists
-    user = db.query(models.Users).filter(models.Users.id == request.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User  not found")
+    # user = db.query(models.Users).filter(models.Users.id == request.user_id).first()
+    # if not user:
+    #     raise HTTPException(status_code=404, detail="User  not found")
 
     if product.stock_quantity < request.quantity:
         raise HTTPException(status_code=400, detail="Not enough stock available")
     
     # Create a new sale instance
-    new_sale = models.Sales(pid=request.pid, user_id=request.user_id, quantity=request.quantity)
+    new_sale = models.Sales(pid=request.pid, quantity=request.quantity)
     
     # Update the stock quantity of the product
     product.stock_quantity -= request.quantity
