@@ -1,34 +1,103 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator, Field
+from datetime import date
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-from typing import Optional
+import re
+
 
 
 
 # Pydantic model for user creation
-class User(BaseModel):
+class UserBase(BaseModel):
+    """المخطط الأساسي للمستخدم"""
+    email: EmailStr
     first_name: str
     last_name: str
-    email: EmailStr
     phone: str
-    password: str
+
+    @validator('phone')
+    def validate_phone(cls, v):
+        if not re.match(r'^\+?1?\d{9,15}$', v):
+            raise ValueError('Invalid phone number format')
+        return v
+
+class UserCreate(UserBase):
+    """مخطط إنشاء مستخدم جديد"""
+    password: str = Field(..., min_length=6)
     confirm_password: str
 
-class UserCreate(BaseModel):
+    @validator('phone')
+    def validate_phone(cls, v):
+        if not re.match(r'^\+?1?\d{9,15}$', v):
+            raise ValueError('Invalid phone number format')
+        return v
+
+    @validator('confirm_password')
+    def passwords_match(cls, v, values):
+        if 'password' in values and v != values['password']:
+            raise ValueError('Passwords do not match')
+        return v
+
+class UserUpdate(BaseModel):
+    """مخطط تحديث المستخدم"""
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    password: Optional[str] = None
+
+    @validator('phone')
+    def validate_phone(cls, v):
+        if v and not re.match(r'^\+?1?\d{9,15}$', v):
+            raise ValueError('Invalid phone number format')
+        return v
+
+    @validator('password')
+    def validate_password(cls, v):
+        if v and len(v) < 6:
+            raise ValueError('Password must be at least 6 characters')
+        return v
+
+
+class UserLogin(BaseModel):
+    """مخطط تسجيل الدخول"""
     email: EmailStr
     password: str
 
-# User schema for response (output)
-class UserResponse(BaseModel):
+class UserResponse(UserBase):
+    """مخطط استجابة بيانات المستخدم"""
     id: int
-    first_name: str
-    last_name: str
-    email: str
-    phone: str
-    password: str
+    created_at: datetime  
+    updated_at: datetime | None = None
 
-class UserLogin(BaseModel):
-    email: str
-    password: str
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+class TokenResponse(BaseModel):
+    """مخطط استجابة التوكن الكامل"""
+    access_token: str
+    access_token_expires: datetime
+    refresh_token: str
+    refresh_token_expires: datetime
+    token_type: str = "bearer"
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+class TokenData(BaseModel):
+    """مخطط بيانات التوكن المستخرجة"""
+    email: Optional[str] = None
+    token_type: Optional[str] = None
+
+class RefreshTokenRequest(BaseModel):
+    """مخطط طلب تجديد التوكن"""
+    refresh_token: str
+
 
 # class LoginRequest(BaseModel):
 #     email: str
@@ -40,16 +109,147 @@ class UserLogin(BaseModel):
 
 
 # Schema for creating a new product
-class Product(BaseModel):
+
+# Base Product Schema (shared properties)
+class ProductBase(BaseModel):
     product_name: str
+    description: Optional[str] = None
     product_price: int
     selling_price: int
     stock_quantity: int
+    image_url: Optional[str] = None
+
+# Schema for creating a product
+class ProductCreate(ProductBase):
+    pass
+
+# Schema for reading a product (includes ID and timestamps)
+class Product(ProductBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        # orm_mode = True   # This will cause a warning in Pydantic V2
+        from_attributes = True  # Updated for Pydantic V2
+
+# Schema for updating a product
+class ProductUpdate(BaseModel):
+    product_name: Optional[str] = None
+    description: Optional[str] = None
+    product_price: Optional[int] = None
+    selling_price: Optional[int] = None
+    stock_quantity: Optional[int] = None
+    image_url: Optional[str] = None
+
+# Schema for product response
+class ProductResponse(Product):
+    @validator('image_url', pre=True)
+    def construct_image_url(cls, v):
+        if v:
+            # Return the relative path if it exists
+            return f"/uploads/{v}" if not v.startswith('/uploads/') else v
+        return None
+
+# class ProductCreate(Product):
+#     pass
 
 
-# Schema for returning a sale (with additional fields)
+
+
+
+# Schema for returning a sale 
 class Sale(BaseModel):
-    pid: int  # Product ID
-    # user_id: int  # User ID (customer)
-    quantity: int  # Quantity of the product sold
-    # sale_date: datetime  # Date of the sale
+    pid: int
+    quantity: int
+    user_id: int  
+
+class UpdateSale(BaseModel):
+    pid: int
+    user_id: int
+    quantity: int
+    price: float
+    date: date
+
+    class Config:
+        # orm_mode = True   # This will cause a warning in Pydantic V2
+        from_attributes = True  # Updated for Pydantic V2
+
+
+class ContactBase(BaseModel):
+    name: str
+    email: EmailStr
+    subject: str
+    message: str
+
+class ContactCreate(ContactBase):
+    pass
+
+class ContactResponse(ContactBase):
+    id: int
+    created_at: datetime
+    status: str  # e.g., 'pending', 'responded', 'closed'
+    response: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ReplyCreate(BaseModel):
+    reply: str
+
+    class Config:
+        from_attributes = True
+
+
+
+
+class ImportHistoryBase(BaseModel):
+    filename: str
+    status: str
+    total_rows: Optional[int]
+    successful_rows: Optional[int]
+    failed_rows: Optional[int]
+    errors: Optional[List[Dict[str, Any]]]
+    created_at: datetime
+    completed_at: Optional[datetime]
+    user_id: Optional[int]
+
+    class Config:
+        orm_mode = True
+
+class ImportHistoryCreate(BaseModel):
+    filename: str
+    user_id: Optional[int]
+
+class ImportHistoryResponse(ImportHistoryBase):
+    id: int
+
+
+
+
+
+
+
+
+
+
+
+# # Schema for Category:
+# class CategoryBase(BaseModel):
+#     name: str
+#     description: Optional[str] = None
+#     icon: Optional[str] = None
+
+# class CategoryCreate(CategoryBase):
+#     pass
+
+# class Category(CategoryBase):
+#     id: int
+#     product_count: Optional[int] = 0
+#     popular_products: Optional[List[dict]] = []
+
+#     class Config:
+#         # orm_mode = True   # This will cause a warning in Pydantic V2
+#         from_attributes = True  # Updated for Pydantic V2
+
