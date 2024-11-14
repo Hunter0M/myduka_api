@@ -14,7 +14,7 @@ ALGORITHM = "HS256"
 
 # تكوين أوقات انتهاء الصلاحية
 ACCESS_TOKEN_EXPIRE_MINUTES = 1  # 30 دقيقة
-REFRESH_TOKEN_EXPIRE_DAYS = 2   # 7 أيام
+REFRESH_TOKEN_EXPIRE_DAYS = 10   # 7 أيام
 
 # إعداد تشفير كلمة المرور
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

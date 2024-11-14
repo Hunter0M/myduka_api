@@ -418,7 +418,6 @@ def add_sale(request: schemas.Sale, db: Session = Depends(database.get_db)):
     return {"message": "Sale added successfully", "sale_id": new_sale.id}
 
 
-# Route for getting sales:
 @app.get("/sales", status_code=status.HTTP_200_OK)
 def fetch_sales(db: Session = Depends(database.get_db)):
     sales = db.query(models.Sales).join(models.Users).join(models.Products).all()
@@ -430,7 +429,9 @@ def fetch_sales(db: Session = Depends(database.get_db)):
             "first_name": sale.users.first_name,
             "quantity": sale.quantity,
             "created_at": sale.created_at,
-            "total_amount": sale.quantity * sale.products.product_price  # Calculate total amount
+            "product_name": sale.products.product_name, 
+            "product_price": sale.products.product_price,
+            "total_amount": sale.quantity * sale.products.product_price
         }
         for sale in sales
     ]
