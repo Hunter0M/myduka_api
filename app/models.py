@@ -1,4 +1,4 @@
-from database import Base 
+from app.database import Base 
 from sqlalchemy import Column, Integer, String,DateTime,ForeignKey,Text,func,JSON
 from datetime import datetime
 from sqlalchemy.orm import relationship
@@ -16,6 +16,7 @@ class Users(Base):
     created_at = Column(DateTime, server_default=func.now())  # Automatically set to the current time
     updated_at = Column(DateTime, onupdate=func.now())
     sales=relationship("Sales", back_populates='users')
+    # products = relationship("Products", back_populates="owner")
 
 
 # Products table:

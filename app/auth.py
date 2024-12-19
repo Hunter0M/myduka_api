@@ -1,20 +1,20 @@
 from passlib.context import CryptContext
-from models import Users
-from database import sessionLocal
+from app.models import Users
+from app.database import sessionLocal
 from datetime import timedelta, datetime, timezone
 from jose import jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends, HTTPException, status
 
 from sqlalchemy.orm import Session
-from schemas import UserLogin
+from app.schemas import UserLogin
 
 SECRET_KEY = "ec998ae8f46bc6a0b20726acfe452ca6b63c3559e215c9260187b3ae902edd70"
 ALGORITHM = "HS256"
 
 # تكوين أوقات انتهاء الصلاحية
 ACCESS_TOKEN_EXPIRE_MINUTES = 1  # 30 دقيقة
-REFRESH_TOKEN_EXPIRE_DAYS = 10   # 7 أيام
+REFRESH_TOKEN_EXPIRE_DAYS = 2  # 7 أيام
 
 # إعداد تشفير كلمة المرور
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

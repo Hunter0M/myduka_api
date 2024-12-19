@@ -1,38 +1,56 @@
 import re # Pattern Matching: Regular expressions allow you to define a search pattern. This pattern can be used to check if a string contains specific characters, words, or sequences.
 import os
+from pathlib import Path 
 import io
 from fastapi.staticfiles import StaticFiles
 import shutil
 from uuid import uuid4
-from datetime import datetime,timezone
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import func
 from fastapi.security import HTTPBearer
 
-from typing import Optional
+from typing import Optional, Union
 import pandas as pd # pip install pandas openpyxl
 
 from fastapi.responses import FileResponse
 
-from fastapi import FastAPI, Depends, status, HTTPException, File, UploadFile, Query, BackgroundTasks
+from fastapi import FastAPI, Depends, status, HTTPException, File, UploadFile, Query, BackgroundTasks, Form
 from sqlalchemy.orm import Session
 from typing import List
-import models, database,schemas
-from auth import get_password_hash, authenticate_user, verify_refresh_token,create_access_token, create_refresh_token
-# # this for hashing the password
-# from passlib.context import CryptContext # pip install passlib[bcrypt] 
+import app.models as models
+import app.database as database
+import app.schemas as schemas
+from app.auth import get_password_hash, authenticate_user, verify_refresh_token, create_access_token, create_refresh_token, get_current_user
 from fastapi.middleware.cors import CORSMiddleware
+from app.schemas import ProductCreate  # Add this line
+from pydantic import ValidationError
 
 
 app = FastAPI()
 models.Base.metadata.create_all(database.engine)
 
+# origins = [
+#     "http://localhost:3000",  # Your React app URL
+#     "http://127.0.0.1:3000",
+#     "http://192.168.1.20:3000",
+# ]
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=origins,  # Don't use ["*"] when using credentials
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"]
+# )
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["http://http://178.62.113.250"],  # Allows all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 @app.get("/")
@@ -62,25 +80,61 @@ def validate_password(password: str) -> None:
 # Route for registering a user:
 @app.post("/register", response_model=schemas.UserResponse)
 async def register(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
-    # التحقق من وجود المستخدم
-    if db.query(models.Users).filter(models.Users.email == user.email).first():
-        raise HTTPException(
-            status_code=400,
-            detail="Email already registered"
+    try:
+        # Check if email already exists
+        existing_user = db.query(models.Users).filter(
+            models.Users.email == user.email.lower()
+        ).first()
+        
+        if existing_user:
+            raise HTTPException(
+                status_code=400,
+                detail="Email already registered"
+            )
+
+        # Password validation is handled by Pydantic model (min_length=6)
+        # Password matching is handled by Pydantic validator
+        # Phone validation is handled by Pydantic validator
+
+        # Create new user with normalized data
+        db_user = models.Users(
+            email=user.email.lower(),
+            first_name=user.first_name.strip(),
+            last_name=user.last_name.strip(),
+            phone=user.phone,
+            password=get_password_hash(user.password)
         )
-    
-    # إنشاء مستخدم جديد
-    db_user = models.Users(
-        email=user.email,
-        first_name=user.first_name,
-        last_name=user.last_name,
-        phone=user.phone,
-        password=get_password_hash(user.password)
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+
+        try:
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+            return db_user
+            
+        except Exception as db_error:
+            db.rollback()
+            print(f"Database error during registration: {str(db_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create user account"
+            )
+
+    except HTTPException as he:
+        # Re-raise HTTP exceptions with their original status codes
+        raise he
+    except ValueError as ve:
+        # Handle validation errors from Pydantic
+        raise HTTPException(
+            status_code=422,
+            detail=str(ve)
+        )
+    except Exception as e:
+        # Handle unexpected errors
+        print(f"Unexpected error during registration: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred"
+        )
 
 @app.post("/login", response_model=schemas.TokenResponse)
 async def login(user_credentials: schemas.UserLogin, db: Session = Depends(database.get_db)):
@@ -122,7 +176,7 @@ async def refresh_token(refresh_request: schemas.RefreshTokenRequest):
 
 # Route for getting all users:
 
-@app.get("/users", response_model=List[schemas.UserResponse])
+@app.get("/users/me", response_model=List[schemas.UserResponse])
 def fetch_users(db: Session = Depends(database.get_db)):
     users = db.query(models.Users).all()
     return users
@@ -165,7 +219,7 @@ def update_user(
     # تحديث البيانات المقدمة فقط
     update_data = user_update.dict(exclude_unset=True)
     
-    # معالجة خاصة لكلمة المرور إذا تم تقديمها
+    # معالجة خاصة للمة المرور إذا تم تقديمها
     if 'password' in update_data:
         update_data['password'] = get_password_hash(update_data['password'])
 
@@ -193,14 +247,61 @@ def delete_user(user_id: int, db: Session = Depends(database.get_db)):
 
 
 
+@app.get("/activity", response_model=schemas.UserActivity)
+def get_user_activity(
+    current_user: models.Users = Depends(get_current_user),
+    db: Session = Depends(database.get_db)
+):
+    # Get recent sales (last 30 days)
+    thirty_days_ago = datetime.now() - timedelta(days=30)
+    recent_sales = db.query(models.Sale)\
+        .filter(
+            models.Sale.user_id == current_user.id,
+            models.Sale.created_at >= thirty_days_ago
+        )\
+        .order_by(models.Sale.created_at.desc())\
+        .limit(10)\
+        .all()
+
+    # Get recent products
+    recent_products = db.query(models.Product)\
+        .filter(models.Product.owner_id == current_user.id)\
+        .order_by(models.Product.created_at.desc())\
+        .limit(10)\
+        .all()
+
+    # Calculate statistics
+    sales_stats = db.query(
+        func.count(models.Sale.id).label('total_sales'),
+        func.sum(models.Sale.total_amount).label('revenue')
+    ).filter(models.Sale.user_id == current_user.id).first()
+
+    total_products = db.query(func.count(models.Product.id))\
+        .filter(models.Product.owner_id == current_user.id)\
+        .scalar()
+
+    return {
+        "recent_sales": recent_sales,
+        "recent_products": recent_products,
+        "statistics": {
+            "total_sales": sales_stats.total_sales or 0,
+            "total_products": total_products or 0,
+            "revenue": float(sales_stats.revenue or 0)
+        }
+    }
+
+
+
 # Start Product Routes >> 
+# Define base directory for the app
+BASE_DIR = Path("/code/app")
+UPLOAD_DIR = BASE_DIR / "uploads"
 
 # Create uploads directory if it doesn't exist
-UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Mount static files directory after creating it
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Mount static files directory - use absolute path
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # Helper function to handle file upload
 async def save_upload_file(upload_file: UploadFile) -> str:
@@ -208,13 +309,13 @@ async def save_upload_file(upload_file: UploadFile) -> str:
         # Generate unique filename
         file_extension = os.path.splitext(upload_file.filename)[1]
         unique_filename = f"{uuid4()}{file_extension}"
-        file_path = os.path.join(UPLOAD_DIR, unique_filename)
+        file_path = UPLOAD_DIR / unique_filename
         
         # Save the file
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(upload_file.file, buffer)
         
-        # Return the relative URL
+        # Return the relative URL (this part stays the same)
         return f"/uploads/{unique_filename}"
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -223,55 +324,121 @@ async def save_upload_file(upload_file: UploadFile) -> str:
 # Route for adding products:
 
 # ALTER TABLE products ADD COLUMN image_url VARCHAR(255);
-@app.post("/products", status_code=status.HTTP_201_CREATED)
+# @app.post("/products", status_code=status.HTTP_201_CREATED)
+# async def add_product(
+#     product_name: str,
+#     product_price: int,
+#     selling_price: int,
+#     stock_quantity: int,
+#     description: str = None,
+#     image: UploadFile = File(None),
+#     db: Session = Depends(database.get_db)
+# ):
+#     try:
+#         # Handle image upload if provided
+#         image_url = None
+#         if image:
+#             if not image.content_type.startswith("image/"):
+#                 raise HTTPException(status_code=400, detail="File must be an image")
+#             image_url = await save_upload_file(image)
+
+#         # Create new product
+#         new_product = models.Products(
+#             product_name=product_name,
+#             product_price=product_price,
+#             selling_price=selling_price,
+#             stock_quantity=stock_quantity,
+#             description=description,
+#             image_url=image_url
+#         )
+        
+#         db.add(new_product)
+#         db.commit()
+#         db.refresh(new_product)  # Refresh to get the created_at and updated_at values
+        
+#         return {"message": "Product added successfully", "product": new_product}
+#     except Exception as e:
+#         print(f"Error adding product: {str(e)}")  # Log the error
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=str(e))
+
+DEFAULT_IMAGE_PATH = "/uploads/default-product.jpg"  # Adjust path as needed
+
+@app.post("/products", response_model=schemas.ProductResponse, status_code=status.HTTP_201_CREATED)
 async def add_product(
-    product_name: str,
-    product_price: int,
-    selling_price: int,
-    stock_quantity: int,
-    description: str = None,
-    image: UploadFile = File(None),
+    product_name: str = Query(...),
+    product_price: int = Query(...),
+    selling_price: int = Query(...),
+    stock_quantity: int = Query(...),
+    description: Optional[str] = Query(None),
+    image: Optional[UploadFile] = File(None),
     db: Session = Depends(database.get_db)
 ):
     try:
+        # Create product data dict
+        product_data = {
+            "product_name": product_name.strip(),
+            "product_price": product_price,
+            "selling_price": selling_price,
+            "stock_quantity": stock_quantity,
+            "description": description.strip() if description else None,
+            "image_url": DEFAULT_IMAGE_PATH
+        }
+
         # Handle image upload if provided
-        image_url = None
-        if image:
+        if image and image.filename:
             if not image.content_type.startswith("image/"):
                 raise HTTPException(status_code=400, detail="File must be an image")
             image_url = await save_upload_file(image)
+            product_data["image_url"] = image_url
 
-        # Create new product
-        new_product = models.Products(
-            product_name=product_name,
-            product_price=product_price,
-            selling_price=selling_price,
-            stock_quantity=stock_quantity,
-            description=description,
-            image_url=image_url
-        )
-        
+        # Validate data using Pydantic model
+        product_create = ProductCreate(**product_data)
+
+        # Create new product in database
+        new_product = models.Products(**product_create.dict())
         db.add(new_product)
         db.commit()
-        db.refresh(new_product)  # Refresh to get the created_at and updated_at values
+        db.refresh(new_product)
         
-        return {"message": "Product added successfully", "product": new_product}
+        return new_product
+
+    except ValidationError as ve:
+        raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
-        print(f"Error adding product: {str(e)}")  # Log the error
+        print(f"Error adding product: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# @app.get("/products/check-name")  # New endpoint specifically for checking product names
+# async def check_product_name(product_name: str, db: Session = Depends(database.get_db)):
+#     try:
+#         product = db.query(models.Products).filter(
+#             models.Products.product_name == product_name
+#         ).first()
+#         return {"exists": product is not None}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/products/check-name")  # New endpoint specifically for checking product names
+
+@app.get("/products/check-name")
 async def check_product_name(product_name: str, db: Session = Depends(database.get_db)):
     try:
+        # Convert to lowercase and trim whitespace for comparison
+        normalized_name = product_name.lower().strip()
         product = db.query(models.Products).filter(
-            models.Products.product_name == product_name
+            func.lower(models.Products.product_name) == normalized_name
         ).first()
-        return {"exists": product is not None}
+        
+        exists = product is not None
+        print(f"Checking product name: {product_name}, exists: {exists}")  # Debug log
+        
+        return {"exists": exists}
     except Exception as e:
+        print(f"Error checking product name: {str(e)}")  # Debug log
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # Your existing routes remain unchanged
 @app.get("/products")
@@ -290,71 +457,179 @@ def fetch_product(id: int, db: Session = Depends(database.get_db)):
     raise HTTPException(status_code=404, detail="Product not found")
 
 
-
-# Route for getting products:
-# @app.get("/products", )
-# def fetch_products(db: Session = Depends(database.get_db)):
-#     try:
-#         products = db.query(models.Products).all()  # Fetch all products from the database
-#         return {"products":products}  # Return the list of products
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))  
-
-# # Route for getting product by the product id: 
-# @app.get("/products/{id}", status_code=status.HTTP_200_OK)
-# def fetch_product(id: int, db: Session = Depends(database.get_db)):
-#     product = db.query(models.Products).filter(models.Products.id == id).first()
-#     if product:
-#         return product
-#     raise HTTPException(status_code=404, detail="Product not found")
-
-
-# Route for update product : 
 @app.put("/products/{id}", status_code=status.HTTP_200_OK)
 async def update_product(
     id: int,
-    product_name: str = Query(None),
-    product_price: int = Query(None),
-    selling_price: int = Query(None),
-    stock_quantity: int = Query(None),
-    description: str = Query(None),
-    image: UploadFile = File(None),
+    product_name: str = Form(...),
+    product_price: float = Form(...),
+    selling_price: float = Form(...),
+    stock_quantity: int = Form(...),
+    description: Optional[str] = Form(default=None),
+    image: Optional[UploadFile] = File(None),
     db: Session = Depends(database.get_db)
 ):
     try:
-        # Fetch the existing product
+        # Fetch existing product
         product = db.query(models.Products).filter(models.Products.id == id).first()
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
-        
-        # Update product fields if new values are provided
-        if product_name is not None:
-            product.product_name = product_name
-        if product_price is not None:
-            product.product_price = product_price
-        if selling_price is not None:
-            product.selling_price = selling_price
-        if stock_quantity is not None:
-            product.stock_quantity = stock_quantity
-        if description is not None:
-            product.description = description
-        
-        # Handle image upload if provided
-        if image:
-            if not image.content_type.startswith("image/"):
-                raise HTTPException(status_code=400, detail="File must be an image")
-            # Save the new image and update the image_url
-            image_url = await save_upload_file(image)
-            product.image_url = image_url
-        
-        # Update the updated_at timestamp
-        product.updated_at = datetime.utcnow()  # or use func.now() if using SQLAlchemy
 
-        # Commit the changes to the database
+        # Check for duplicate name
+        existing_product = db.query(models.Products).filter(
+            models.Products.product_name == product_name.strip(),
+            models.Products.id != id
+        ).first()
+        
+        if existing_product:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product with name '{product_name}' already exists"
+            )
+
+        # Handle image upload
+        if image:
+            try:
+                if not image.content_type.startswith("image/"):
+                    raise HTTPException(status_code=400, detail="File must be an image")
+                
+                # Delete old image if it exists and isn't the default
+                if product.image_url and not product.image_url.endswith('default-product.png'):
+                    old_image_path = os.path.join(UPLOAD_DIR, os.path.basename(product.image_url))
+                    if os.path.exists(old_image_path):
+                        os.remove(old_image_path)
+                
+                # Save new image
+                image_url = await save_upload_file(image)
+                product.image_url = image_url
+                
+            except Exception as e:
+                print(f"Error handling image: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Error uploading image: {str(e)}")
+
+        # Update other fields
+        product.product_name = product_name.strip()
+        product.product_price = float(product_price)
+        product.selling_price = float(selling_price)
+        product.stock_quantity = int(stock_quantity)
+        if description is not None:
+            product.description = description.strip()
+        
+        product.updated_at = datetime.utcnow()
+
+        # Commit changes
         db.commit()
         db.refresh(product)
         
-        return {"message": "Product updated successfully", "product": product}
+        return {
+            "message": "Product updated successfully",
+            "product": {
+                "id": product.id,
+                "product_name": product.product_name,
+                "product_price": product.product_price,
+                "selling_price": product.selling_price,
+                "stock_quantity": product.stock_quantity,
+                "description": product.description,
+                "image_url": product.image_url,
+                "updated_at": product.updated_at
+            }
+        }
+
+    except HTTPException as he:
+        db.rollback()
+        raise he
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating product: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# @app.put("/products/{id}", status_code=status.HTTP_200_OK)
+# async def update_product(
+#     id: int,
+#     product_name: str = Query(None),
+#     product_price: int = Query(None),
+#     selling_price: int = Query(None),
+#     stock_quantity: int = Query(None),
+#     description: str = Query(None),
+#     image: UploadFile = File(None),
+#     image_url: str = Form(None),  # Add this parameter
+#     db: Session = Depends(database.get_db)
+# ):
+#     try:
+#         # Fetch the existing product
+#         product = db.query(models.Products).filter(models.Products.id == id).first()
+#         if not product:
+#             raise HTTPException(status_code=404, detail="Product not found")
+        
+#         # Update product fields if new values are provided
+#         if product_name is not None:
+#             product.product_name = product_name
+#         if product_price is not None:
+#             product.product_price = product_price
+#         if selling_price is not None:
+#             product.selling_price = selling_price
+#         if stock_quantity is not None:
+#             product.stock_quantity = stock_quantity
+#         if description is not None:
+#             product.description = description
+        
+#         # Handle image removal
+#         if image_url == '':
+#             # Delete the old image file if it exists
+#             if product.image_url:
+#                 old_image_path = os.path.join(os.getcwd(), product.image_url.lstrip('/'))
+#                 if os.path.exists(old_image_path):
+#                     os.remove(old_image_path)
+#             product.image_url = None
+#         # Handle new image upload
+#         elif image:
+#             if not image.content_type.startswith("image/"):
+#                 raise HTTPException(status_code=400, detail="File must be an image")
+            
+#             # Delete old image if exists
+#             if product.image_url:
+#                 old_image_path = os.path.join(os.getcwd(), product.image_url.lstrip('/'))
+#                 if os.path.exists(old_image_path):
+#                     os.remove(old_image_path)
+            
+#             # Save new image
+#             image_url = await save_upload_file(image)
+#             product.image_url = image_url
+        
+#         # Update the updated_at timestamp
+#         product.updated_at = datetime.utcnow()
+
+#         # Commit the changes to the database
+#         db.commit()
+#         db.refresh(product)
+        
+#         return {"message": "Product updated successfully", "product": product}
+#     except Exception as e:
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.put("/products/{id}/remove-image", status_code=status.HTTP_200_OK)
+async def remove_product_image(id: int, db: Session = Depends(database.get_db)):
+    try:
+        product = db.query(models.Products).filter(models.Products.id == id).first()
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        # Delete the physical image file if it exists
+        if product.image_url:
+            image_path = os.path.join(os.getcwd(), product.image_url.lstrip('/'))
+            if os.path.exists(image_path):
+                os.remove(image_path)
+
+        # Update the database record
+        product.image_url = None
+        product.updated_at = datetime.utcnow()
+        
+        db.commit()
+        db.refresh(product)
+        
+        return {"message": "Image removed successfully", "product": product}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -391,31 +666,42 @@ async def delete_product(id: int, db: Session = Depends(database.get_db)):
 # Route for making sales:
 @app.post("/sales", status_code=status.HTTP_201_CREATED)
 def add_sale(request: schemas.Sale, db: Session = Depends(database.get_db)):
-    # Fetch the product to check its stock quantity
-    product = db.query(models.Products).filter(models.Products.id == request.pid).first()
-    
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
+    try:
+        # Fetch the product
+        product = db.query(models.Products).filter(models.Products.id == request.pid).first()
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
 
-    if product.stock_quantity < request.quantity:
-        raise HTTPException(status_code=400, detail="Not enough stock available")
-    
-    # Create a new sale instance with user_id
-    new_sale = models.Sales(
-        pid=request.pid, 
-        quantity=request.quantity,
-        user_id=request.user_id  # Add this line
-    )
-    
-    # Update the stock quantity of the product
-    product.stock_quantity -= request.quantity
-    
-    # Add the new sale and commit the changes
-    db.add(new_sale)
-    db.commit()
-    db.refresh(new_sale)
-    
-    return {"message": "Sale added successfully", "sale_id": new_sale.id}
+        # Check stock
+        if product.stock_quantity < request.quantity:
+            raise HTTPException(status_code=400, detail="Not enough stock available")
+        
+        # Create sale
+        new_sale = models.Sales(
+            pid=request.pid,
+            quantity=request.quantity,
+            user_id=request.user_id
+        )
+        
+        db.add(new_sale)
+        db.commit()
+        db.refresh(new_sale)
+        
+        return {
+            "message": "Sale created successfully",
+            "sale": {
+                "id": new_sale.id,
+                "pid": new_sale.pid,
+                "quantity": new_sale.quantity,
+                "user_id": new_sale.user_id,
+                "created_at": new_sale.created_at
+            }
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/sales", status_code=status.HTTP_200_OK)

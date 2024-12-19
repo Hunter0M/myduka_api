@@ -46,6 +46,16 @@ class UserUpdate(BaseModel):
     phone: Optional[str] = None
     password: Optional[str] = None
 
+    @validator('email')
+    def validate_email(cls, v):
+        return v.lower().strip()
+
+    @validator('first_name', 'last_name')
+    def validate_names(cls, v):
+        if not v.strip():
+            raise ValueError("Name cannot be empty")
+        return v.strip()
+
     @validator('phone')
     def validate_phone(cls, v):
         if v and not re.match(r'^\+?1?\d{9,15}$', v):
@@ -68,7 +78,7 @@ class UserResponse(UserBase):
     """مخطط استجابة بيانات المستخدم"""
     id: int
     created_at: datetime  
-    updated_at: datetime | None = None
+    updated_at: datetime | None = None     #
 
     class Config:
         from_attributes = True
@@ -164,6 +174,13 @@ class Sale(BaseModel):
     quantity: int
     user_id: int  
 
+# This schema for user profile:
+class SaleBase(BaseModel):
+    product_name: str
+    quantity: int
+    total_amount: float
+    created_at: datetime
+
 class UpdateSale(BaseModel):
     pid: int
     user_id: int
@@ -175,6 +192,11 @@ class UpdateSale(BaseModel):
         # orm_mode = True   # This will cause a warning in Pydantic V2
         from_attributes = True  # Updated for Pydantic V2
 
+# This schema for user profile:
+class Statistics(BaseModel):
+    total_sales: int
+    total_products: int
+    revenue: float
 
 class ContactBase(BaseModel):
     name: str
@@ -228,7 +250,10 @@ class ImportHistoryResponse(ImportHistoryBase):
 
 
 
-
+class UserActivity(BaseModel):
+    recent_sales: List[SaleBase]
+    recent_products: List[ProductBase]
+    statistics: Statistics
 
 
 

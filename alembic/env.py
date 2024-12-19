@@ -3,7 +3,7 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from alembic import context
-from models import Base  # Make sure this is the correct path to your models
+from app.models import Base
 
 # This is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
