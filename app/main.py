@@ -22,8 +22,9 @@ import app.database as database
 import app.schemas as schemas
 from app.auth import get_password_hash, authenticate_user, verify_refresh_token, create_access_token, create_refresh_token, get_current_user
 from fastapi.middleware.cors import CORSMiddleware
-from app.schemas import ProductCreate  # Add this line
+from app.schemas import ProductCreate, VendorCreate, VendorUpdate, Vendor  # Add these to your schemas
 from pydantic import ValidationError
+from sqlalchemy.orm import joinedload
 
 
 app = FastAPI()
@@ -46,7 +47,8 @@ models.Base.metadata.create_all(database.engine)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://http://178.62.113.250"],  # Allows all origins
+    # allow_origins=["http://http://178.62.113.250"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,7 +58,10 @@ app.add_middleware(
 @app.get("/")
 def index():
     return {"message": "Hello, World!"}
-
+# Add this simple test route
+@app.get("/test")
+def test_route():
+    return {"message": "Test route works!"}
 
 # # Password hashing
 # pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -321,66 +326,35 @@ async def save_upload_file(upload_file: UploadFile) -> str:
         raise HTTPException(status_code=500, detail=str(e))
         
 
-# Route for adding products:
-
-# ALTER TABLE products ADD COLUMN image_url VARCHAR(255);
-# @app.post("/products", status_code=status.HTTP_201_CREATED)
-# async def add_product(
-#     product_name: str,
-#     product_price: int,
-#     selling_price: int,
-#     stock_quantity: int,
-#     description: str = None,
-#     image: UploadFile = File(None),
-#     db: Session = Depends(database.get_db)
-# ):
-#     try:
-#         # Handle image upload if provided
-#         image_url = None
-#         if image:
-#             if not image.content_type.startswith("image/"):
-#                 raise HTTPException(status_code=400, detail="File must be an image")
-#             image_url = await save_upload_file(image)
-
-#         # Create new product
-#         new_product = models.Products(
-#             product_name=product_name,
-#             product_price=product_price,
-#             selling_price=selling_price,
-#             stock_quantity=stock_quantity,
-#             description=description,
-#             image_url=image_url
-#         )
-        
-#         db.add(new_product)
-#         db.commit()
-#         db.refresh(new_product)  # Refresh to get the created_at and updated_at values
-        
-#         return {"message": "Product added successfully", "product": new_product}
-#     except Exception as e:
-#         print(f"Error adding product: {str(e)}")  # Log the error
-#         db.rollback()
-#         raise HTTPException(status_code=500, detail=str(e))
-
 DEFAULT_IMAGE_PATH = "/uploads/default-product.jpg"  # Adjust path as needed
 
 @app.post("/products", response_model=schemas.ProductResponse, status_code=status.HTTP_201_CREATED)
 async def add_product(
-    product_name: str = Query(...),
-    product_price: int = Query(...),
-    selling_price: int = Query(...),
-    stock_quantity: int = Query(...),
-    description: Optional[str] = Query(None),
+    product_name: str = Form(...),
+    product_price: int = Form(...),
+    selling_price: int = Form(...),
+    stock_quantity: int = Form(...),
+    vendor_id: int = Form(...),
+    description: Optional[str] = Form(None),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(database.get_db)
 ):
     try:
+        # Validate vendor exists
+        vendor = db.query(models.Vendor).filter(models.Vendor.id == vendor_id).first()
+        if not vendor:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Vendor with ID {vendor_id} not found"
+            )
+
         # Create product data dict
         product_data = {
             "product_name": product_name.strip(),
             "product_price": product_price,
             "selling_price": selling_price,
             "stock_quantity": stock_quantity,
+            "vendor_id": vendor_id,
             "description": description.strip() if description else None,
             "image_url": DEFAULT_IMAGE_PATH
         }
@@ -392,11 +366,18 @@ async def add_product(
             image_url = await save_upload_file(image)
             product_data["image_url"] = image_url
 
-        # Validate data using Pydantic model
-        product_create = ProductCreate(**product_data)
+        # Check for duplicate product name
+        existing_product = db.query(models.Products).filter(
+            models.Products.product_name == product_name.strip()
+        ).first()
+        if existing_product:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product with name '{product_name}' already exists"
+            )
 
         # Create new product in database
-        new_product = models.Products(**product_create.dict())
+        new_product = models.Products(**product_data)
         db.add(new_product)
         db.commit()
         db.refresh(new_product)
@@ -405,6 +386,8 @@ async def add_product(
 
     except ValidationError as ve:
         raise HTTPException(status_code=422, detail=str(ve))
+    except HTTPException as he:
+        raise he
     except Exception as e:
         print(f"Error adding product: {str(e)}")
         db.rollback()
@@ -441,21 +424,96 @@ async def check_product_name(product_name: str, db: Session = Depends(database.g
 
 
 # Your existing routes remain unchanged
+# @app.get("/products")
+# def fetch_products(db: Session = Depends(database.get_db)):
+#     try:
+#         products = db.query(models.Products).all()
+#         return {"products": products}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 @app.get("/products")
 def fetch_products(db: Session = Depends(database.get_db)):
     try:
-        products = db.query(models.Products).all()
-        return {"products": products}
+        # Query products with vendor information
+        products = db.query(models.Products).options(
+            joinedload(models.Products.vendor)
+        ).all()
+        
+        # Format the response
+        formatted_products = []
+        for product in products:
+            product_dict = {
+                "id": product.id,
+                "product_name": product.product_name,
+                "product_price": product.product_price,
+                "selling_price": product.selling_price,
+                "stock_quantity": product.stock_quantity,
+                "description": product.description,
+                "image_url": product.image_url,
+                "created_at": product.created_at,
+                "updated_at": product.updated_at,
+                "vendor_id": product.vendor_id,
+                "vendor": {
+                    "id": product.vendor.id,
+                    "name": product.vendor.name,
+                    "contact_person": product.vendor.contact_person,
+                    "email": product.vendor.email,
+                    "phone": product.vendor.phone,
+                    "address": product.vendor.address
+                } if product.vendor else None
+            }
+            formatted_products.append(product_dict)
+        
+        return {"products": formatted_products}
     except Exception as e:
+        print(f"Error fetching products: {str(e)}")  # Debug log
         raise HTTPException(status_code=500, detail=str(e))
+    
+    
+# @app.get("/products/{id}")
+# def fetch_product(id: int, db: Session = Depends(database.get_db)):
+#     product = db.query(models.Products).filter(models.Products.id == id).first()
+#     if product:
+#         return product
+#     raise HTTPException(status_code=404, detail="Product not found")
+
 
 @app.get("/products/{id}")
 def fetch_product(id: int, db: Session = Depends(database.get_db)):
-    product = db.query(models.Products).filter(models.Products.id == id).first()
-    if product:
-        return product
-    raise HTTPException(status_code=404, detail="Product not found")
-
+    try:
+        # Use joinedload to eagerly load the vendor relationship
+        product = db.query(models.Products)\
+            .options(joinedload(models.Products.vendor))\
+            .filter(models.Products.id == id)\
+            .first()
+            
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+            
+        # Convert to dict and include vendor information
+        return {
+            "id": product.id,
+            "product_name": product.product_name,
+            "description": product.description,
+            "product_price": product.product_price,
+            "selling_price": product.selling_price,
+            "stock_quantity": product.stock_quantity,
+            "image_url": product.image_url,
+            "created_at": product.created_at,
+            "updated_at": product.updated_at,
+            "vendor_id": product.vendor_id,
+            "vendor": {
+                "id": product.vendor.id,
+                "name": product.vendor.name,
+                "contact_person": product.vendor.contact_person,
+                "email": product.vendor.email,
+                "phone": product.vendor.phone,
+                "address": product.vendor.address
+            } if product.vendor else None
+        }
+    except Exception as e:
+        print(f"Error fetching product: {str(e)}")  # Debug log
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/products/{id}", status_code=status.HTTP_200_OK)
 async def update_product(
@@ -1166,6 +1224,135 @@ async def get_import_details(
         raise HTTPException(status_code=404, detail="Import record not found")
     
     return import_record
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+    
+
+
+
+
+# Start Vendor Routes >>
+
+@app.post("/vendors", response_model=schemas.Vendor)
+def create_vendor(vendor: schemas.VendorCreate, db: Session = Depends(database.get_db)):
+    try:
+        db_vendor = models.Vendor(**vendor.dict())
+        db.add(db_vendor)
+        db.commit()
+        db.refresh(db_vendor)
+        return db_vendor
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vendors", response_model=List[schemas.Vendor])
+def get_vendors(
+    skip: int = 0, 
+    limit: int = 100, 
+    db: Session = Depends(database.get_db)
+):
+    vendors = db.query(models.Vendor).offset(skip).limit(limit).all()
+    return vendors
+
+# @app.get("/vendors/{vendor_id}", response_model=schemas.Vendor)
+# def get_vendor(vendor_id: int, db: Session = Depends(database.get_db)):
+#     vendor = db.query(models.Vendor).filter(models.Vendor.id == vendor_id).first()
+#     if vendor is None:
+#         raise HTTPException(status_code=404, detail="Vendor not found")
+#     return vendor
+
+@app.get("/vendors/{vendor_id}")
+def get_vendor(vendor_id: int, db: Session = Depends(database.get_db)):
+    try:
+        vendor = db.query(models.Vendor)\
+            .options(joinedload(models.Vendor.products))\
+            .filter(models.Vendor.id == vendor_id)\
+            .first()
+        
+        if vendor is None:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+            
+        # Convert to dict with all necessary fields
+        return {
+            "id": vendor.id,
+            "name": vendor.name,
+            "contact_person": vendor.contact_person,
+            "email": vendor.email,
+            "phone": vendor.phone,
+            "address": vendor.address,
+            "created_at": vendor.created_at,
+            "updated_at": vendor.updated_at,
+            "products": [
+                {
+                    "id": product.id,
+                    "product_name": product.product_name,
+                    "product_price": product.product_price,
+                    "selling_price": product.selling_price,
+                    "stock_quantity": product.stock_quantity
+                }
+                for product in vendor.products
+            ] if vendor.products else []
+        }
+    except Exception as e:
+        print(f"Error fetching vendor: {str(e)}")  # Debug log
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/vendors/{vendor_id}", response_model=schemas.Vendor)
+def update_vendor(
+    vendor_id: int, 
+    vendor: schemas.VendorUpdate, 
+    db: Session = Depends(database.get_db)
+):
+    try:
+        db_vendor = db.query(models.Vendor).filter(models.Vendor.id == vendor_id).first()
+        if db_vendor is None:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        
+        for key, value in vendor.dict(exclude_unset=True).items():
+            setattr(db_vendor, key, value)
+        
+        db.commit()
+        db.refresh(db_vendor)
+        return db_vendor
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/vendors/{vendor_id}")
+def delete_vendor(vendor_id: int, db: Session = Depends(database.get_db)):
+    try:
+        vendor = db.query(models.Vendor).filter(models.Vendor.id == vendor_id).first()
+        if vendor is None:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        
+        db.delete(vendor)
+        db.commit()
+        return {"message": "Vendor deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# The end for the Vendor routes <<
 
 
 

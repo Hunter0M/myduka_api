@@ -1,5 +1,5 @@
 from app.database import Base 
-from sqlalchemy import Column, Integer, String,DateTime,ForeignKey,Text,func,JSON
+from sqlalchemy import Column, Integer, String,DateTime,ForeignKey,Text,func,JSON,Boolean
 from datetime import datetime
 from sqlalchemy.orm import relationship
 
@@ -16,7 +16,24 @@ class Users(Base):
     created_at = Column(DateTime, server_default=func.now())  # Automatically set to the current time
     updated_at = Column(DateTime, onupdate=func.now())
     sales=relationship("Sales", back_populates='users')
+    reset_tokens = relationship("PasswordResetTokens", back_populates="user", cascade="all, delete-orphan")
+    
     # products = relationship("Products", back_populates="owner")
+
+
+
+# ... existing imports and models ...
+
+class PasswordResetTokens(Base):
+    __tablename__ = "password_reset_tokens"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    token = Column(String, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime)
+    
+    user = relationship("Users", back_populates="reset_tokens")
 
 
 # Products table:
@@ -29,11 +46,29 @@ class Products(Base):
     stock_quantity = Column(Integer, nullable=False)
     description = Column(Text, nullable=True) 
     image_url = Column(String(255), nullable=True) 
-    created_at = Column(DateTime, onupdate=datetime.utcnow, default=datetime.utcnow)
-    updated_at = Column(DateTime, onupdate=datetime.utcnow, default=datetime.utcnow)
-    sales=relationship("Sales", back_populates="products")
-    # category_id = Column(Integer, ForeignKey("categories.id"))
-    # category = relationship("Category", back_populates="products")
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    vendor = relationship("Vendor", back_populates="products")
+    sales = relationship("Sales", back_populates="products")
+
+
+
+class Vendor(Base):
+    __tablename__ = "vendors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    contact_person = Column(String)
+    email = Column(String, unique=True)
+    phone = Column(String)
+    address = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship with products (one vendor can have many products)
+    products = relationship("Products", back_populates="vendor")
+
 
 
 # Sales table:

@@ -153,17 +153,37 @@ class ProductUpdate(BaseModel):
     image_url: Optional[str] = None
 
 # Schema for product response
-class ProductResponse(Product):
-    @validator('image_url', pre=True)
-    def construct_image_url(cls, v):
-        if v:
-            # Return the relative path if it exists
-            return f"/uploads/{v}" if not v.startswith('/uploads/') else v
-        return None
+class ProductResponse(ProductCreate):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    vendor: Optional['VendorBase'] = None  # Add vendor relationship
 
-# class ProductCreate(Product):
-#     pass
+    class Config:
+        from_attributes = True
 
+
+# Vendor Schema:
+class VendorBase(BaseModel):
+    name: str
+    contact_person: Optional[str] = None
+    email: EmailStr
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+class VendorCreate(VendorBase):
+    pass
+
+class VendorUpdate(VendorBase):
+    pass
+
+class Vendor(VendorBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 
@@ -277,4 +297,28 @@ class UserActivity(BaseModel):
 #     class Config:
 #         # orm_mode = True   # This will cause a warning in Pydantic V2
 #         from_attributes = True  # Updated for Pydantic V2
+
+
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+class PasswordReset(BaseModel):
+    token: str
+    new_password: str
+
+    @validator('new_password')
+    def validate_password(cls, v):
+        if len(v) < 6:
+            raise ValueError('Password must be at least 6 characters long')
+        if not re.search(r"[A-Za-z]", v):
+            raise ValueError('Password must contain at least one letter')
+        if not re.search(r"[0-9]", v):
+            raise ValueError('Password must contain at least one number')
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
+            raise ValueError('Password must contain at least one special character')
+        return v
+
+
 
